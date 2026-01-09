@@ -1,5 +1,6 @@
-Advanced OS Mini-Project
-Project Structure
+# Advanced OS Mini-Project
+**Project Structure**
+'''
 ADVANCED-OS-MINIPROJECT/
 ├── solutionchannels/     # Channel-based implementation
 ├── solutionmonitor/      # Monitor pattern implementation  
@@ -9,6 +10,7 @@ ADVANCED-OS-MINIPROJECT/
 ├── README.md             # This file
 ├── image.png             # Project Structure Overview (Visual Description)
 └── go.mod                # Root Go module
+'''
 ![Project sructure](image.png)
 Team Contribution
 This project was completed by LAKEHAL AMANI ALA and YALAOUI DJAMILA through daily collaborative sessions.
