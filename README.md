@@ -55,7 +55,7 @@ This approach ensured both members developed a deep understanding of each synchr
 ```bash
 cd ADVANCED-OS-MINIPROJECT
 ```
-###Step 2: Observe Race Conditions
+### Step 2: Observe Race Conditions
 Run the unsynchronized version to witness race conditions:
 ```
 cd unsynchronized
@@ -65,7 +65,7 @@ Expected Output:
 Race detector warnings and incorrect results in all three scenarios.
 
 
-###Step 3: Test All Solutions
+### Step 3: Test All Solutions
 Each solution directory contains a complete implementation. Test them individually as follows:
 
 **1. Coarse-Grained Mutex**
@@ -97,12 +97,12 @@ go test -race -v
 go test -bench=. -benchmem
 ```
 
-##Performance Summary
+## Performance Summary
 **Based on our benchmarks:**
 
 In our performance analysis, the channel-based approach demonstrated the fastest execution and best overall throughput, excelling particularly in concurrency scenarios. The reader-writer mutex (RWMutex) proved ideal for read-heavy workloads by allowing multiple concurrent read operations while maintaining data consistency. The standard mutex implementation, while straightforward and correct in all scenarios, showed slower performance compared to both channels and RWMutex. Finally, the monitor pattern implementation, though guaranteed safe under all tested conditions, incurred the highest overhead and was the slowest among all approaches, making it less suitable for performance-critical applications despite its robustness.
 
-##Expected Test Scenarios
+## Expected Test Scenarios
 All solutions handle the following scenarios correctly:
 
 
