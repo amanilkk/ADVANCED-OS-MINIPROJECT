@@ -54,6 +54,7 @@ This approach ensured both members developed a deep understanding of each synchr
 3. Navigate to the project directory:
 ```bash
 cd ADVANCED-OS-MINIPROJECT
+```
 ###Step 2: Observe Race Conditions
 Run the unsynchronized version to witness race conditions:
 ```
@@ -68,29 +69,33 @@ Race detector warnings and incorrect results in all three scenarios.
 Each solution directory contains a complete implementation. Test them individually as follows:
 
 **1. Coarse-Grained Mutex**
+```
 cd solutionmutex
 go test -v                # Run all tests
 go test -race -v          # Check for race conditions (should pass)
 go test -bench=. -benchmem  # Run benchmarks
-
+```
 **2. Monitor Pattern**
+```
 cd solutionmonitor
 go test -v                
 go test -race -v          
 go test -bench=. -benchmem
-
+```
 **3. Reader-Writer Lock**
+```
 cd solutionrwmutex
 go test -v                
 go test -race -v          
 go test -bench=. -benchmem
-
+```
 **4. Channel-Based Solution**
+```
 cd solutionchannels
 go test -v                
 go test -race -v          
 go test -bench=. -benchmem
-
+```
 
 ##Performance Summary
 **Based on our benchmarks:**
