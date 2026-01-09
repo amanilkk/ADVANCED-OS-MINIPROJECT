@@ -49,10 +49,13 @@ This approach ensured both members developed a deep understanding of each synchr
 - Terminal or command prompt access
 
 ### Step 1: Setup
-1. Unzip the file `advanced-os-miniproject.rar`
-2. Open the extracted folder in VS Code
-3. Navigate to the project directory:
+#### Option A: From ZIP file
+Download and unzip the file advanced-os-miniproject.rar
+Open the extracted folder in VS Code or your preferred IDE
+#### Option B: From GitHub (if available)
+Clone the repository:
 ```bash
+git clone https://github.com/amanilkk/ADVANCED-OS-MINIPROJECT.git
 cd ADVANCED-OS-MINIPROJECT
 ```
 ### Step 2: Observe Race Conditions
