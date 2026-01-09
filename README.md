@@ -11,7 +11,7 @@
 ---
 
 ## Project Structure
-'''
+```
 ADVANCED-OS-MINIPROJECT/
 ├── solutionchannels/     # Channel-based implementation
 ├── solutionmonitor/      # Monitor pattern implementation  
@@ -21,7 +21,7 @@ ADVANCED-OS-MINIPROJECT/
 ├── README.md             # This file
 ├── image.png             # Project Structure Overview (Visual Description)
 └── go.mod                # Root Go module
-'''
+```
 
 ![Project Structure](image.png)
 
