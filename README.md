@@ -54,14 +54,12 @@ This approach ensured both members developed a deep understanding of each synchr
 3. Navigate to the project directory:
 ```bash
 cd ADVANCED-OS-MINIPROJECT
-
-
 ###Step 2: Observe Race Conditions
 Run the unsynchronized version to witness race conditions:
-
+```
 cd unsynchronized
 go run -race .
-
+```
 Expected Output:
 Race detector warnings and incorrect results in all three scenarios.
 
