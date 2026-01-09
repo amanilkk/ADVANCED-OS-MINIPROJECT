@@ -5,13 +5,25 @@ import (
 	"sync"
 	"time"
 )
+
+/*
+APPROACH 2: MONITOR PATTERN (SINGLE ACTIVE TRANSACTION)
+  
+Description:
+- This implementation enforces that only one transaction is active at a time.
+- Uses a **mutex (`db.mu`)** and a **condition variable (`db.cond`)** to serialize transactions.
+- Transactions that try to start while another is active will **wait on the condition variable**.
+- Once the active transaction commits or aborts, waiting transactions are signaled.
+- This is a form of a monitor: mutual exclusion + condition synchronization.
+*/
+
 type Transaction struct {
 	ID         int
 	StartTime  time.Time
 	Operations []string
 }
 
-// Record struct (internal)
+// Record represents a single database record
 type Record struct {
 	Key       string
 	Value     int
@@ -19,7 +31,7 @@ type Record struct {
 	UpdatedAt time.Time
 }
 
-// Stats for monitoring
+// Stats tracks database operations
 type Stats struct {
 	TotalReads     int
 	TotalWrites    int
@@ -27,23 +39,18 @@ type Stats struct {
 	LostUpdates    int
 	DataCorruption int
 }
-// Record represents a single database record
 
 // Database represents an in-memory key-value database
-// WARNING: This implementation has NO synchronization!
-// Multiple goroutines accessing this will cause race conditions.
 type Database struct {
-	mu        sync.Mutex
-	cond      *sync.Cond
+	mu        sync.Mutex    // Mutex protects the monitor state (activeTx, txCounter)
+	cond      *sync.Cond    // Condition variable to wait for transaction availability
 	records   map[string]*Record
 	txCounter int
-	activeTx  bool
+	activeTx  bool           // Indicates if a transaction is currently active
 	stats     Stats
 }
 
-// Stats tracks database statistics to detect corruption
-
-// NewDatabase creates a new database instance
+// NewDatabase initializes a new database and monitor
 func NewDatabase() *Database {
 	db := &Database{
 		records: make(map[string]*Record),
@@ -52,17 +59,17 @@ func NewDatabase() *Database {
 	return db
 }
 
-// BeginTransaction starts a new transaction
-// RACE CONDITION: txCounter is not protected!
-func (db *Database) BeginTransaction() *Transaction {
-	db.mu.Lock()
+/* ================= TRANSACTIONS ================= */
 
-	for db.activeTx {
-		db.cond.Wait()
+// BeginTransaction blocks if another transaction is active
+func (db *Database) BeginTransaction() *Transaction {
+	db.mu.Lock()          // Enter monitor
+	for db.activeTx {     // Wait until no active transaction
+		db.cond.Wait()    // Releases mutex while waiting, reacquires on wake-up
 	}
 
-	db.activeTx = true
-	db.txCounter++
+	db.activeTx = true    // Mark this transaction as active
+	db.txCounter++        // Assign a unique ID safely within mutex
 
 	return &Transaction{
 		ID:        db.txCounter,
@@ -70,44 +77,62 @@ func (db *Database) BeginTransaction() *Transaction {
 	}
 }
 
-// Read retrieves a value from the database
-// RACE CONDITION: Reading while another goroutine is writing
-func (db *Database) Read(tx *Transaction, key string) (int, bool) {
-	db.stats.TotalReads++ // UNSAFE: Not atomic
+// Commit releases the active transaction and signals waiting goroutines
+func (db *Database) Commit(tx *Transaction) {
+	duration := time.Since(tx.StartTime)
+	tx.Operations = append(tx.Operations, fmt.Sprintf("COMMIT (duration: %v)", duration))
 
+	db.activeTx = false     // Release the monitor
+	db.cond.Signal()        // Wake up one waiting transaction
+	db.mu.Unlock()          // Exit monitor
+}
+
+// Abort cancels a transaction and signals waiting goroutines
+func (db *Database) Abort(tx *Transaction) {
+	duration := time.Since(tx.StartTime)
+	tx.Operations = append(tx.Operations, fmt.Sprintf("ABORT (duration: %v)", duration))
+
+	db.activeTx = false
+	db.cond.Signal()
+	db.mu.Unlock()
+}
+
+/* ================= CRUD OPERATIONS ================= */
+
+// All CRUD operations in this monitor are NOT fully synchronized individually.
+// They rely on the single active transaction enforcement to avoid races.
+// Sleep calls simulate processing and make race conditions more likely
+// if multiple goroutines bypass the monitor incorrectly.
+
+// Read operation
+func (db *Database) Read(tx *Transaction, key string) (int, bool) {
+	db.stats.TotalReads++ // NOT atomic
 	record, exists := db.records[key]
 	if !exists {
 		tx.Operations = append(tx.Operations, fmt.Sprintf("READ %s: NOT_FOUND", key))
 		return 0, false
 	}
 
-	// Simulate some processing time to increase likelihood of race conditions
-	time.Sleep(time.Microsecond * 10)
-
-	value := record.Value // UNSAFE: Value might change between check and read
+	time.Sleep(time.Microsecond * 10) // Simulate delay
+	value := record.Value              // Could be unsafe if multiple writes occur
 	tx.Operations = append(tx.Operations, fmt.Sprintf("READ %s: %d", key, value))
 	return value, true
 }
 
-// Write creates or updates a record in the database
-// RACE CONDITION: Multiple writes to the same key can cause lost updates
+// Write operation
 func (db *Database) Write(tx *Transaction, key string, value int) {
-	db.stats.TotalWrites++ // UNSAFE: Not atomic
+	db.stats.TotalWrites++ // NOT atomic
 
 	existingRecord, exists := db.records[key]
-
-	// Simulate some processing time
 	time.Sleep(time.Microsecond * 10)
 
 	if exists {
-		// UNSAFE: Another goroutine might update version between read and write
 		oldVersion := existingRecord.Version
 		existingRecord.Value = value
-		existingRecord.Version = oldVersion + 1 // Lost update can happen here!
+		existingRecord.Version = oldVersion + 1
 		existingRecord.UpdatedAt = time.Now()
 		tx.Operations = append(tx.Operations, fmt.Sprintf("WRITE %s: %d (v%d)", key, value, existingRecord.Version))
 	} else {
-		// UNSAFE: Two goroutines might both think the key doesn't exist
 		db.records[key] = &Record{
 			Key:       key,
 			Value:     value,
@@ -118,22 +143,16 @@ func (db *Database) Write(tx *Transaction, key string, value int) {
 	}
 }
 
-// Update performs a read-modify-write operation
-// RACE CONDITION: Classic lost update problem!
+// Update operation (read-modify-write)
 func (db *Database) Update(tx *Transaction, key string, delta int) bool {
-	db.stats.TotalUpdates++ // UNSAFE: Not atomic
-
-	// Read current value
+	db.stats.TotalUpdates++
 	currentValue, exists := db.records[key]
 	if !exists {
 		tx.Operations = append(tx.Operations, fmt.Sprintf("UPDATE %s: NOT_FOUND", key))
 		return false
 	}
 
-	// Simulate some processing time (makes race condition more likely)
 	time.Sleep(time.Microsecond * 50)
-
-	// UNSAFE: Another goroutine might have modified the value!
 	oldVersion := currentValue.Version
 	newValue := currentValue.Value + delta
 	currentValue.Value = newValue
@@ -144,8 +163,7 @@ func (db *Database) Update(tx *Transaction, key string, delta int) bool {
 	return true
 }
 
-// Delete removes a record from the database
-// RACE CONDITION: Concurrent deletes or delete during read
+// Delete operation
 func (db *Database) Delete(tx *Transaction, key string) bool {
 	_, exists := db.records[key]
 	if !exists {
@@ -153,62 +171,37 @@ func (db *Database) Delete(tx *Transaction, key string) bool {
 		return false
 	}
 
-	// Simulate some processing time
 	time.Sleep(time.Microsecond * 10)
-
-	// UNSAFE: Another goroutine might delete or modify this key
 	delete(db.records, key)
 	tx.Operations = append(tx.Operations, fmt.Sprintf("DELETE %s: SUCCESS", key))
 	return true
 }
 
-// Commit finalizes a transaction
-func (db *Database) Commit(tx *Transaction) {
-	duration := time.Since(tx.StartTime)
-	tx.Operations = append(tx.Operations, fmt.Sprintf("COMMIT (duration: %v)", duration))
-	db.activeTx = false
-	db.cond.Signal()
-	db.mu.Unlock()
-}
+/* ================= UTILITIES ================= */
 
-// Abort cancels a transaction
-func (db *Database) Abort(tx *Transaction) {
-	duration := time.Since(tx.StartTime)
-	tx.Operations = append(tx.Operations, fmt.Sprintf("ABORT (duration: %v)", duration))
-
-	db.activeTx = false
-	db.cond.Signal()
-	db.mu.Unlock()
-}
-
-// GetStats returns current database statistics
-// RACE CONDITION: Stats are being read while being modified
+// GetStats returns database stats (unsafe if called concurrently)
 func (db *Database) GetStats() Stats {
-	return db.stats // UNSAFE: Struct copy is not atomic
+	return db.stats
 }
 
-// VerifyIntegrity checks for data corruption
-// This helps demonstrate that race conditions occurred
+// VerifyIntegrity checks for data corruption (demonstrates race conditions)
 func (db *Database) VerifyIntegrity(expectedValues map[string]int) (bool, []string) {
 	errors := make([]string, 0)
-
 	for key, expectedValue := range expectedValues {
 		record, exists := db.records[key]
 		if !exists {
 			errors = append(errors, fmt.Sprintf("Key %s missing (expected %d)", key, expectedValue))
 			continue
 		}
-
 		if record.Value != expectedValue {
 			errors = append(errors, fmt.Sprintf("Key %s has value %d (expected %d)", key, record.Value, expectedValue))
 			db.stats.DataCorruption++
 		}
 	}
-
 	return len(errors) == 0, errors
 }
 
-// PrintStats displays database statistics
+// PrintStats prints current database statistics
 func (db *Database) PrintStats() {
 	stats := db.GetStats()
 	fmt.Println("\n=== Database Statistics ===")
@@ -220,17 +213,15 @@ func (db *Database) PrintStats() {
 	fmt.Println("===========================")
 }
 
-// GetRecordCount returns the number of records
-// RACE CONDITION: Map length can change during iteration
+// GetRecordCount returns record count (unsafe if concurrent)
 func (db *Database) GetRecordCount() int {
-	return len(db.records) // UNSAFE: Map access not synchronized
+	return len(db.records)
 }
 
-// PrintRecords displays all records (for debugging)
-// RACE CONDITION: Iterating over map while it's being modified
+// PrintRecords displays all records (unsafe for concurrent access)
 func (db *Database) PrintRecords() {
 	fmt.Println("\n=== Database Records ===")
-	for key, record := range db.records { // UNSAFE: Concurrent map iteration
+	for key, record := range db.records {
 		fmt.Printf("%s: value=%d, version=%d, updated=%v\n",
 			key, record.Value, record.Version, record.UpdatedAt.Format("15:04:05.000"))
 	}
