@@ -8,6 +8,12 @@ import (
 
 /*
 APPROACH 1: COARSE-GRAINED MUTEX (TRANSACTION-LEVEL)
+
+Description:
+- This implementation uses a single Mutex (`db.mu`) to protect the entire database state.
+- All operations within a transaction (Begin, Commit, Abort, CRUD) acquire the same mutex.
+- This ensures correctness (no race conditions), but limits concurrency since only one goroutine
+  can access any part of the database at a time.
 */
 
 type Transaction struct {
@@ -16,7 +22,7 @@ type Transaction struct {
 	Operations []string
 }
 
-// Record struct (internal)
+// Record represents a single database record
 type Record struct {
 	Key       string
 	Value     int
@@ -24,7 +30,7 @@ type Record struct {
 	UpdatedAt time.Time
 }
 
-// Stats for monitoring
+// Stats tracks database activity and anomalies
 type Stats struct {
 	TotalReads     int
 	TotalWrites    int
@@ -32,13 +38,16 @@ type Stats struct {
 	LostUpdates    int
 	DataCorruption int
 }
+
+// Database with a coarse-grained mutex
 type Database struct {
-	mu        sync.Mutex
-	records   map[string]*Record
-	txCounter int
-	stats     Stats
+	mu        sync.Mutex          // Mutex protects all operations and records
+	records   map[string]*Record  // Map of database records
+	txCounter int                 // Transaction counter for unique IDs
+	stats     Stats               // Statistics for monitoring
 }
 
+// Constructor
 func NewDatabase() *Database {
 	return &Database{
 		records: make(map[string]*Record),
@@ -47,10 +56,11 @@ func NewDatabase() *Database {
 
 /* ================= TRANSACTIONS ================= */
 
+// BeginTransaction locks the database to start a transaction
 func (db *Database) BeginTransaction() *Transaction {
-	db.mu.Lock()
+	db.mu.Lock() // Acquire the mutex for the entire database
 
-	db.txCounter++
+	db.txCounter++ // Increment transaction counter safely
 	return &Transaction{
 		ID:         db.txCounter,
 		StartTime:  time.Now(),
@@ -58,24 +68,27 @@ func (db *Database) BeginTransaction() *Transaction {
 	}
 }
 
+// Commit releases the mutex and logs transaction info
 func (db *Database) Commit(tx *Transaction) {
 	duration := time.Since(tx.StartTime)
 	tx.Operations = append(tx.Operations,
 		fmt.Sprintf("COMMIT (duration: %v)", duration))
 
-	db.mu.Unlock()
+	db.mu.Unlock() // Release the mutex after transaction completes
 }
 
+// Abort releases the mutex if transaction fails
 func (db *Database) Abort(tx *Transaction) {
 	duration := time.Since(tx.StartTime)
 	tx.Operations = append(tx.Operations,
 		fmt.Sprintf("ABORT (duration: %v)", duration))
 
-	db.mu.Unlock()
+	db.mu.Unlock() // Release the mutex
 }
 
 /* ================= CRUD OPERATIONS ================= */
 
+// Read operation increments read stats; safe because mutex is held during transaction
 func (db *Database) Read(tx *Transaction, key string) (int, bool) {
 	db.stats.TotalReads++
 
@@ -91,6 +104,7 @@ func (db *Database) Read(tx *Transaction, key string) (int, bool) {
 	return record.Value, true
 }
 
+// Write operation updates or creates a record; safe due to coarse-grained mutex
 func (db *Database) Write(tx *Transaction, key string, value int) {
 	db.stats.TotalWrites++
 
@@ -112,6 +126,7 @@ func (db *Database) Write(tx *Transaction, key string, value int) {
 	}
 }
 
+// Update safely modifies an existing record
 func (db *Database) Update(tx *Transaction, key string, delta int) bool {
 	db.stats.TotalUpdates++
 
@@ -133,6 +148,7 @@ func (db *Database) Update(tx *Transaction, key string, delta int) bool {
 	return true
 }
 
+// Delete safely removes a record
 func (db *Database) Delete(tx *Transaction, key string) bool {
 	if _, exists := db.records[key]; !exists {
 		tx.Operations = append(tx.Operations,
@@ -148,12 +164,14 @@ func (db *Database) Delete(tx *Transaction, key string) bool {
 
 /* ================= UTILITIES ================= */
 
+// GetStats safely retrieves database statistics
 func (db *Database) GetStats() Stats {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	return db.stats
 }
 
+// PrintStats prints the statistics in a human-readable format
 func (db *Database) PrintStats() {
 	stats := db.GetStats()
 	fmt.Println("\n=== Database Statistics ===")
@@ -165,12 +183,14 @@ func (db *Database) PrintStats() {
 	fmt.Println("===========================")
 }
 
+// GetRecordCount returns number of records safely
 func (db *Database) GetRecordCount() int {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	return len(db.records)
 }
 
+// PrintRecords prints all records safely
 func (db *Database) PrintRecords() {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -184,7 +204,7 @@ func (db *Database) PrintRecords() {
 	fmt.Println("========================")
 }
 
-// ADD THIS METHOD - Required by DatabaseInterface
+// VerifyIntegrity checks that all expected values match the database
 func (db *Database) VerifyIntegrity(expectedValues map[string]int) (bool, []string) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
