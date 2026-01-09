@@ -1,3 +1,3 @@
-module database-sync-unsynchronized
+module advanced-os-miniProject
 
-go 1.21
+go 1.25.2

@@ -88,8 +88,8 @@ func runGeneralScenario(db *Database) {
 
 	// Display final state
 	fmt.Println("\nFinal database state:")
-	db.PrintRecords()
-	db.PrintStats()
+	//db.PrintRecords()
+	//db.PrintStats()
 
 	fmt.Println("\n⚠️  Note: If you see inconsistent data or the program crashes,")
 	fmt.Println("    that's expected! This demonstrates why synchronization is needed.")

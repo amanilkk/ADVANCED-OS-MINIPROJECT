@@ -139,8 +139,12 @@ func RunBankTransferScenario(db *Database, numClients int, transfersPerClient in
 	wg.Wait()
 
 	// Verify total is still 2000 (it won't be due to race conditions!)
-	finalA, _ := db.Read(db.BeginTransaction(), "account_A")
-	finalB, _ := db.Read(db.BeginTransaction(), "account_B")
+tx := db.BeginTransaction()
+finalA, _ := db.Read(tx, "account_A")
+finalB, _ := db.Read(tx, "account_B")
+db.Commit(tx)
+
+
 	finalTotal := finalA + finalB
 
 	fmt.Printf("\nFinal state: account_A=%d, account_B=%d, total=%d\n", finalA, finalB, finalTotal)
@@ -186,8 +190,9 @@ func RunCounterScenario(db *Database, numClients int, incrementsPerClient int) {
 
 	wg.Wait()
 
-	// Check final value
-	finalValue, _ := db.Read(db.BeginTransaction(), "counter")
+	tx := db.BeginTransaction()
+finalValue, _ := db.Read(tx, "counter")
+db.Commit(tx)
 
 	fmt.Printf("Final counter value: %d\n", finalValue)
 
