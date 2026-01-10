@@ -135,8 +135,8 @@ func TestConcurrentReadWrite(t *testing.T) {
 	inconsistentReads := 0
 	var inconsistentMutex sync.Mutex
 
-	numReaders := 5
-	numWriters := 3
+	numReaders := 15
+	numWriters := 10
 
 	// Start readers
 	for i := 0; i < numReaders; i++ {
