@@ -6,17 +6,38 @@ import (
 )
 
 //
-// ----------------------------
-// DATA STRUCTURES
-// ----------------------------
+// ============================
+// INTERNAL OPERATION MODEL
+// ============================
 //
 
-// Record représente une entrée de la base de données.
-// Chaque record contient :
-// - une clé
-// - une valeur entière
-// - une version (utile pour détecter les mises à jour)
-// - un timestamp de la dernière modification
+type operationType int
+
+const (
+	opBegin operationType = iota
+	opCommit
+	opRead
+	opWrite
+	opUpdate
+	opDelete
+	opStats
+)
+
+type operation struct {
+	opType     operationType
+	tx         *Transaction
+	key        string
+	value      int
+	delta      int
+	resultChan chan any
+}
+
+//
+// ============================
+// DATA STRUCTURES
+// ============================
+//
+
 type Record struct {
 	Key       string
 	Value     int
@@ -24,176 +45,284 @@ type Record struct {
 	UpdatedAt time.Time
 }
 
-// Transaction représente une transaction logique.
-// Elle sert principalement à identifier une transaction
-// et à mesurer sa durée.
 type Transaction struct {
 	ID        int
 	StartTime time.Time
 }
 
-// Stats permet de collecter des statistiques globales
-// sur l'utilisation de la base de données.
 type Stats struct {
 	TotalReads   int
 	TotalWrites  int
 	TotalUpdates int
 }
 
-// Database est la structure principale de la base.
-// Elle implémente une synchronisation "coarse-grained".
+//
+// ============================
+// DATABASE
+// ============================
+//
+
 type Database struct {
-	// lockChan est un canal utilisé comme verrou exclusif.
-	// Sa capacité est 1 → une seule transaction peut l’occuper.
-	lockChan chan struct{}
+	opChan chan operation
 
-	// records contient les données de la base (clé → record).
 	records map[string]*Record
+	stats   Stats
 
-	// txCounter sert à attribuer des identifiants uniques aux transactions.
 	txCounter int
+	activeTx  *Transaction
 
-	// stats stocke les statistiques d'accès.
-	stats Stats
+	waitingBegins []chan any 
 }
 
 //
-// ----------------------------
+// ============================
 // CONSTRUCTOR
-// ----------------------------
+// ============================
 //
 
-// NewDatabase initialise la base de données.
-// Le canal lockChan est pré-rempli pour représenter
-// un verrou initialement libre.
 func NewDatabase() *Database {
 	db := &Database{
-		lockChan: make(chan struct{}, 1),
-		records:  make(map[string]*Record),
+		opChan:  make(chan operation),
+		records: make(map[string]*Record),
 	}
-
-	// Insertion d’un token dans le canal :
-	// cela signifie que la base est initialement "déverrouillée".
-	db.lockChan <- struct{}{}
+	go db.run()
 	return db
 }
 
 //
-// ----------------------------
-// TRANSACTION MANAGEMENT
-// ----------------------------
+// ============================
+// EVENT LOOP (SAFE, NO DEADLOCK)
+// ============================
 //
 
-// BeginTransaction démarre une transaction.
-// Elle bloque tant que le verrou n’est pas disponible.
-// Cela garantit qu’une seule transaction peut être active à la fois.
-func (db *Database) BeginTransaction() *Transaction {
-	<-db.lockChan // acquisition du verrou (exclusivité totale)
+func (db *Database) run() {
+	for op := range db.opChan {
 
-	db.txCounter++
-	return &Transaction{
-		ID:        db.txCounter,
-		StartTime: time.Now(),
-	}
-}
+		switch op.opType {
 
-// Commit termine une transaction.
-// Il libère le verrou, permettant à une autre transaction de commencer.
-func (db *Database) Commit(tx *Transaction) {
-	db.lockChan <- struct{}{} // libération du verrou
-}
+		// ----------------------------
+		// BEGIN TRANSACTION
+		// ----------------------------
 
-// Abort annule une transaction.
-// Dans cette implémentation simple, Abort équivaut à Commit,
-// car il n’y a pas de journal ou rollback.
-func (db *Database) Abort(tx *Transaction) {
-	db.lockChan <- struct{}{}
-}
+		case opBegin:
+			if db.activeTx == nil {
+				db.startTransaction(op.resultChan)
+			} else {
+				db.waitingBegins = append(db.waitingBegins, op.resultChan)
+			}
 
-//
-// ----------------------------
-// CRUD OPERATIONS
-// ----------------------------
-//
+		// ----------------------------
+		// COMMIT
+		// ----------------------------
 
-// Read lit une valeur associée à une clé.
-// Comme la transaction détient le verrou, la lecture est isolée
-// et ne peut pas voir d’état intermédiaire.
-func (db *Database) Read(tx *Transaction, key string) (int, bool) {
-	db.stats.TotalReads++
+		case opCommit:
+			if db.activeTx != nil && db.activeTx.ID == op.tx.ID {
+				db.activeTx = nil
 
-	rec, ok := db.records[key]
-	if !ok {
-		return 0, false
-	}
-	return rec.Value, true
-}
+				// start next waiting transaction (FIFO)
+				if len(db.waitingBegins) > 0 {
+					next := db.waitingBegins[0]
+					db.waitingBegins = db.waitingBegins[1:]
+					db.startTransaction(next)
+				}
+			}
+			op.resultChan <- true
 
-// Write écrit ou remplace complètement la valeur d’une clé.
-// Si la clé existe, la version est incrémentée.
-// Sinon, un nouveau record est créé.
-func (db *Database) Write(tx *Transaction, key string, value int) {
-	db.stats.TotalWrites++
+		// ----------------------------
+		// DATA OPERATIONS
+		// ----------------------------
 
-	rec, ok := db.records[key]
-	if ok {
-		rec.Value = value
-		rec.Version++
-		rec.UpdatedAt = time.Now()
-	} else {
-		db.records[key] = &Record{
-			Key:       key,
-			Value:     value,
-			Version:   1,
-			UpdatedAt: time.Now(),
+		default:
+			// enforce transaction isolation
+			if db.activeTx == nil || db.activeTx.ID != op.tx.ID {
+				// invalid access → ignore safely
+				continue
+			}
+			db.execute(op)
 		}
 	}
 }
 
-// Update applique une modification incrémentale (delta).
-// Elle est typiquement utilisée pour les compteurs.
-// Retourne false si la clé n’existe pas.
+func (db *Database) startTransaction(ch chan any) {
+	db.txCounter++
+	tx := &Transaction{
+		ID:        db.txCounter,
+		StartTime: time.Now(),
+	}
+	db.activeTx = tx
+	ch <- tx
+}
+
+//
+// ============================
+// OPERATION EXECUTION
+// ============================
+//
+
+func (db *Database) execute(op operation) {
+	switch op.opType {
+
+	case opRead:
+		db.stats.TotalReads++
+		rec, ok := db.records[op.key]
+		if !ok {
+			op.resultChan <- struct {
+				val int
+				ok  bool
+			}{0, false}
+		} else {
+			op.resultChan <- struct {
+				val int
+				ok  bool
+			}{rec.Value, true}
+		}
+
+	case opWrite:
+		db.stats.TotalWrites++
+		rec, ok := db.records[op.key]
+		if ok {
+			rec.Value = op.value
+			rec.Version++
+			rec.UpdatedAt = time.Now()
+		} else {
+			db.records[op.key] = &Record{
+				Key:       op.key,
+				Value:     op.value,
+				Version:   1,
+				UpdatedAt: time.Now(),
+			}
+		}
+		op.resultChan <- true
+
+	case opUpdate:
+		db.stats.TotalUpdates++
+		rec, ok := db.records[op.key]
+		if !ok {
+			op.resultChan <- false
+			return
+		}
+		rec.Value += op.delta
+		rec.Version++
+		rec.UpdatedAt = time.Now()
+		op.resultChan <- true
+
+	case opDelete:
+		_, ok := db.records[op.key]
+		if ok {
+			delete(db.records, op.key)
+		}
+		op.resultChan <- ok
+
+	case opStats:
+		op.resultChan <- db.stats
+	}
+}
+
+//
+// ============================
+// TRANSACTION API
+// ============================
+//
+
+func (db *Database) BeginTransaction() *Transaction {
+	ch := make(chan any)
+	db.opChan <- operation{
+		opType:     opBegin,
+		resultChan: ch,
+	}
+	return (<-ch).(*Transaction)
+}
+
+func (db *Database) Commit(tx *Transaction) {
+	ch := make(chan any)
+	db.opChan <- operation{
+		opType:     opCommit,
+		tx:         tx,
+		resultChan: ch,
+	}
+	<-ch
+}
+
+func (db *Database) Abort(tx *Transaction) {
+	db.Commit(tx)
+}
+
+//
+// ============================
+// CRUD OPERATIONS
+// ============================
+//
+
+func (db *Database) Read(tx *Transaction, key string) (int, bool) {
+	ch := make(chan any)
+	db.opChan <- operation{
+		opType:     opRead,
+		tx:         tx,
+		key:        key,
+		resultChan: ch,
+	}
+	res := (<-ch).(struct {
+		val int
+		ok  bool
+	})
+	return res.val, res.ok
+}
+
+func (db *Database) Write(tx *Transaction, key string, value int) {
+	ch := make(chan any)
+	db.opChan <- operation{
+		opType:     opWrite,
+		tx:         tx,
+		key:        key,
+		value:      value,
+		resultChan: ch,
+	}
+	<-ch
+}
+
 func (db *Database) Update(tx *Transaction, key string, delta int) bool {
-	db.stats.TotalUpdates++
-
-	rec, ok := db.records[key]
-	if !ok {
-		return false
+	ch := make(chan any)
+	db.opChan <- operation{
+		opType:     opUpdate,
+		tx:         tx,
+		key:        key,
+		delta:      delta,
+		resultChan: ch,
 	}
-
-	rec.Value += delta
-	rec.Version++
-	rec.UpdatedAt = time.Now()
-	return true
+	return (<-ch).(bool)
 }
 
-// Delete supprime un record de la base.
-// Retourne false si la clé n’existe pas.
 func (db *Database) Delete(tx *Transaction, key string) bool {
-	if _, ok := db.records[key]; !ok {
-		return false
+	ch := make(chan any)
+	db.opChan <- operation{
+		opType:     opDelete,
+		tx:         tx,
+		key:        key,
+		resultChan: ch,
 	}
-	delete(db.records, key)
-	return true
+	return (<-ch).(bool)
 }
 
 //
-// ----------------------------
+// ============================
 // UTILITIES
-// ----------------------------
+// ============================
 //
 
-// GetStats retourne une copie des statistiques globales.
 func (db *Database) GetStats() Stats {
-	return db.stats
+	ch := make(chan any)
+	db.opChan <- operation{
+		opType:     opStats,
+		resultChan: ch,
+	}
+	return (<-ch).(Stats)
 }
 
-// PrintRecords affiche l’état courant de la base.
-// Cette fonction suppose qu’aucune autre transaction
-// n’est en cours d’exécution.
 func (db *Database) PrintRecords() {
+	tx := db.BeginTransaction()
 	fmt.Println("=== Records ===")
 	for k, r := range db.records {
 		fmt.Printf("%s = %d (v%d)\n", k, r.Value, r.Version)
 	}
+	db.Commit(tx)
 }
