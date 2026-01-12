@@ -14,22 +14,22 @@ import (
 type operationType int
 
 const (
-	opBegin operationType = iota
-	opCommit
-	opRead
-	opWrite
-	opUpdate
-	opDelete
-	opStats
+	opBegin  operationType = iota // start a transaction
+	opCommit                      // commit a transaction
+	opRead                        // read a value
+	opWrite                       // write a value
+	opUpdate                      // update an existing value
+	opDelete                      // delete a value
+	opStats                       // fetch statistics
 )
 
 type operation struct {
 	opType     operationType
-	tx         *Transaction
+	tx         *Transaction // associated transaction
 	key        string
 	value      int
-	delta      int
-	resultChan chan any
+	delta      int      // used for Update
+	resultChan chan any // channel to return result
 }
 
 //
@@ -41,8 +41,8 @@ type operation struct {
 type Record struct {
 	Key       string
 	Value     int
-	Version   int
-	UpdatedAt time.Time
+	Version   int       // incremented on each modification
+	UpdatedAt time.Time // last update time
 }
 
 type Transaction struct {
@@ -63,7 +63,7 @@ type Stats struct {
 //
 
 type Database struct {
-	opChan chan operation
+	opChan chan operation // main channel for all operations
 
 	records map[string]*Record
 	stats   Stats
@@ -71,7 +71,7 @@ type Database struct {
 	txCounter int
 	activeTx  *Transaction
 
-	waitingBegins []chan any 
+	waitingBegins []chan any // queue for pending transactions
 }
 
 //
@@ -85,7 +85,7 @@ func NewDatabase() *Database {
 		opChan:  make(chan operation),
 		records: make(map[string]*Record),
 	}
-	go db.run()
+	go db.run() // start concurrent event loop
 	return db
 }
 
@@ -108,6 +108,7 @@ func (db *Database) run() {
 			if db.activeTx == nil {
 				db.startTransaction(op.resultChan)
 			} else {
+				// transaction waiting in queue
 				db.waitingBegins = append(db.waitingBegins, op.resultChan)
 			}
 
@@ -119,30 +120,30 @@ func (db *Database) run() {
 			if db.activeTx != nil && db.activeTx.ID == op.tx.ID {
 				db.activeTx = nil
 
-				// start next waiting transaction (FIFO)
+				// start next pending transaction (FIFO)
 				if len(db.waitingBegins) > 0 {
 					next := db.waitingBegins[0]
 					db.waitingBegins = db.waitingBegins[1:]
 					db.startTransaction(next)
 				}
 			}
-			op.resultChan <- true
+			op.resultChan <- true // signal completion
 
 		// ----------------------------
 		// DATA OPERATIONS
 		// ----------------------------
 
 		default:
-			// enforce transaction isolation
+			// ensure transaction isolation
 			if db.activeTx == nil || db.activeTx.ID != op.tx.ID {
-				// invalid access → ignore safely
-				continue
+				continue // invalid access ignored
 			}
 			db.execute(op)
 		}
 	}
 }
 
+// start a new transaction and send it back via channel
 func (db *Database) startTransaction(ch chan any) {
 	db.txCounter++
 	tx := &Transaction{
@@ -169,7 +170,7 @@ func (db *Database) execute(op operation) {
 			op.resultChan <- struct {
 				val int
 				ok  bool
-			}{0, false}
+			}{0, false} // key not found
 		} else {
 			op.resultChan <- struct {
 				val int
@@ -198,7 +199,7 @@ func (db *Database) execute(op operation) {
 		db.stats.TotalUpdates++
 		rec, ok := db.records[op.key]
 		if !ok {
-			op.resultChan <- false
+			op.resultChan <- false // cannot update non-existing key
 			return
 		}
 		rec.Value += op.delta
@@ -230,7 +231,7 @@ func (db *Database) BeginTransaction() *Transaction {
 		opType:     opBegin,
 		resultChan: ch,
 	}
-	return (<-ch).(*Transaction)
+	return (<-ch).(*Transaction) // block until transaction starts
 }
 
 func (db *Database) Commit(tx *Transaction) {
@@ -240,9 +241,10 @@ func (db *Database) Commit(tx *Transaction) {
 		tx:         tx,
 		resultChan: ch,
 	}
-	<-ch
+	<-ch // wait for commit completion
 }
 
+// abort simply commits (no rollback logic)
 func (db *Database) Abort(tx *Transaction) {
 	db.Commit(tx)
 }
@@ -318,6 +320,7 @@ func (db *Database) GetStats() Stats {
 	return (<-ch).(Stats)
 }
 
+// prints all records within a transaction
 func (db *Database) PrintRecords() {
 	tx := db.BeginTransaction()
 	fmt.Println("=== Records ===")
